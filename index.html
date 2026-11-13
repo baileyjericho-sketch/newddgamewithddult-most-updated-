@@ -1,0 +1,783 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Daredevil vs Kingpin</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0d0a0a;
+      color: #e0e0e0;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      overflow: hidden;
+      user-select: none;
+    }
+    h1 {
+      color: #c41e3a;
+      text-shadow: 0 0 18px rgba(196, 30, 58, 0.6);
+      margin-bottom: 6px;
+      letter-spacing: 3px;
+      font-size: 1.7rem;
+    }
+    .subtitle {
+      color: #777;
+      margin-bottom: 14px;
+      font-size: 0.9rem;
+    }
+    #game {
+      background: #111;
+      border: 3px solid #333;
+      border-radius: 8px;
+      box-shadow: 0 0 40px rgba(0,0,0,0.85), 0 0 60px rgba(196, 30, 58, 0.15);
+      max-width: 100%;
+      cursor: none;
+    }
+    .controls {
+      margin-top: 14px;
+      text-align: center;
+      color: #666;
+      font-size: 0.85rem;
+      line-height: 1.6;
+    }
+    .controls span {
+      color: #c41e3a;
+      font-weight: 600;
+    }
+    .disclaimer {
+      margin-top: 10px;
+      font-size: 0.7rem;
+      color: #444;
+    }
+  </style>
+</head>
+<body>
+  <h1>DAREDEVIL</h1>
+  <div class="subtitle">vs Kingpin — 3 Levels — Unofficial Fan Game</div>
+  <canvas id="game" width="900" height="500"></canvas>
+  <div class="controls">
+    <span>A / ←</span> Move &nbsp;|&nbsp;
+    <span>W / Space</span> Jump &nbsp;|&nbsp;
+    <span>J / X</span> Swing &nbsp;|&nbsp;
+    <span>K</span> Throw &nbsp;|&nbsp;
+    <span>L / U</span> <b>ULTIMATE</b> (when charged)<br>
+    Deal damage to charge your Ultimate • Level 3: Kingpin has his own Ultimate
+  </div>
+  <div class="disclaimer">Fan-made project. Not affiliated with Marvel or Disney.</div>
+
+
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+
+
+    let gameState = 'start';
+    let currentLevel = 1;
+    const maxLevel = 3;
+    let frame = 0;
+    let levelClearTimer = 0;
+
+
+    const keys = {};
+    window.addEventListener('keydown', e => {
+      keys[e.code] = true;
+      if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
+      if ((gameState === 'start' || gameState === 'win' || gameState === 'lose') &&
+          (e.code === 'Space' || e.code === 'Enter' || e.code === 'KeyR')) {
+        currentLevel = 1;
+        startGame();
+      }
+      if (gameState === 'levelclear' && (e.code === 'Space' || e.code === 'Enter')) {
+        currentLevel++;
+        if (currentLevel > maxLevel) gameState = 'win';
+        else startGame();
+      }
+    });
+    window.addEventListener('keyup', e => keys[e.code] = false);
+
+
+    const player = {
+      x: 180, y: 320, w: 34, h: 52,
+      vx: 0, vy: 0, speed: 5.4, jumpPower: -13.8,
+      onGround: false, facing: 1,
+      health: 100, maxHealth: 100, invincible: 0,
+      attackCooldown: 0, attackTimer: 0, throwCooldown: 0,
+      ultimateMeter: 0, ultimateMax: 180,
+      ultimateReady: false, ultimateActive: false, ultimateTimer: 0
+    };
+
+
+    const kingpin = {
+      x: 620, y: 280, w: 70, h: 95,
+      vx: 0, vy: 0, speed: 1.6,
+      health: 180, maxHealth: 180, facing: -1,
+      attackCooldown: 0, attackTimer: 0, state: 'idle', hurtTimer: 0,
+      ultimateReady: false, ultimateTimer: 0, ultimateCooldown: 0, ultimateUsed: false
+    };
+
+
+    let thugs = [], platforms = [], batons = [], particles = [], hitboxes = [], shockwaves = [];
+
+
+    function createPlatform(x, y, w, h = 20) { return { x, y, w, h }; }
+
+
+    function getLevelConfig(level) {
+      if (level === 1) return {
+        kingpinHealth: 160, kingpinSpeed: 1.4, kingpinAttackRate: 80, thugCount: 0,
+        platforms: [createPlatform(-50,430,1000), createPlatform(150,340,130), createPlatform(400,300,110), createPlatform(650,340,140)]
+      };
+      if (level === 2) return {
+        kingpinHealth: 220, kingpinSpeed: 1.9, kingpinAttackRate: 60, thugCount: 2,
+        platforms: [createPlatform(-50,430,1000), createPlatform(80,350,120), createPlatform(280,290,100), createPlatform(480,340,130), createPlatform(700,280,110), createPlatform(820,360,90)]
+      };
+      return {
+        kingpinHealth: 300, kingpinSpeed: 2.3, kingpinAttackRate: 48, thugCount: 3,
+        platforms: [createPlatform(-50,430,1000), createPlatform(60,360,100), createPlatform(200,300,90), createPlatform(360,250,100), createPlatform(520,310,110), createPlatform(680,260,100), createPlatform(820,340,90)]
+      };
+    }
+
+
+    function spawnThugs(count) {
+      thugs = [];
+      for (let i = 0; i < count; i++) {
+        thugs.push({
+          x: 400 + i * 150 + Math.random() * 80, y: 300, w: 28, h: 42,
+          vx: 0, vy: 0, speed: 1.8 + Math.random() * 0.6, facing: -1,
+          health: 40, attackCooldown: 40 + i * 20, hurtTimer: 0
+        });
+      }
+    }
+
+
+    function addUltimateMeter(amount) {
+      if (player.ultimateActive) return;
+      player.ultimateMeter = Math.min(player.ultimateMax, player.ultimateMeter + amount);
+      if (player.ultimateMeter >= player.ultimateMax) player.ultimateReady = true;
+    }
+
+
+    function resetWorld() {
+      const cfg = getLevelConfig(currentLevel);
+      platforms = cfg.platforms;
+
+
+      player.x = 140; player.y = 300; player.vx = 0; player.vy = 0; player.facing = 1;
+      player.health = 100; player.invincible = 0;
+      player.attackCooldown = 0; player.attackTimer = 0; player.throwCooldown = 0;
+      player.ultimateMeter = 0; player.ultimateReady = false; player.ultimateActive = false; player.ultimateTimer = 0;
+
+
+      kingpin.x = 680; kingpin.y = 280; kingpin.vx = 0; kingpin.vy = 0;
+      kingpin.health = cfg.kingpinHealth; kingpin.maxHealth = cfg.kingpinHealth;
+      kingpin.speed = cfg.kingpinSpeed; kingpin.facing = -1;
+      kingpin.attackCooldown = 0; kingpin.attackTimer = 0; kingpin.state = 'idle'; kingpin.hurtTimer = 0;
+      kingpin.ultimateReady = false; kingpin.ultimateTimer = 0; kingpin.ultimateCooldown = 0; kingpin.ultimateUsed = false;
+
+
+      spawnThugs(cfg.thugCount);
+      batons = []; particles = []; hitboxes = []; shockwaves = [];
+      frame = 0; levelClearTimer = 0;
+    }
+
+
+    function startGame() { resetWorld(); gameState = 'playing'; }
+
+
+    function drawDaredevil(x, y, facing) {
+      ctx.save();
+      ctx.translate(x + player.w / 2, y + player.h / 2);
+      ctx.scale(facing, 1);
+      if (player.ultimateActive) { ctx.shadowColor = '#ff3355'; ctx.shadowBlur = 18; }
+
+
+      ctx.fillStyle = '#8b0000';
+      ctx.beginPath();
+      ctx.moveTo(-6, -8); ctx.quadraticCurveTo(-18, 5, -14, 26); ctx.lineTo(10, 26); ctx.quadraticCurveTo(6, 2, 8, -8);
+      ctx.closePath(); ctx.fill();
+
+
+      ctx.fillStyle = player.ultimateActive ? '#ff2244' : '#c41e3a';
+      ctx.fillRect(-11, -14, 22, 34);
+
+
+      ctx.fillStyle = '#a01830';
+      ctx.beginPath(); ctx.ellipse(0, -22, 12, 13, 0, 0, Math.PI * 2); ctx.fill();
+
+
+      ctx.fillStyle = '#7a1020';
+      ctx.beginPath(); ctx.moveTo(-7, -30); ctx.lineTo(-10, -42); ctx.lineTo(-2, -32); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(7, -30); ctx.lineTo(10, -42); ctx.lineTo(2, -32); ctx.closePath(); ctx.fill();
+
+
+      ctx.fillStyle = '#1a0508'; ctx.fillRect(-10, -26, 20, 7);
+
+
+      ctx.fillStyle = '#f0e6d0'; ctx.font = 'bold 11px system-ui'; ctx.textAlign = 'center';
+      ctx.fillText('DD', 0, 2); ctx.textAlign = 'left';
+
+
+      if (player.attackTimer <= 0 && !player.ultimateActive) {
+        ctx.fillStyle = '#222'; ctx.fillRect(10, -2, 5, 22); ctx.fillRect(-15, -2, 5, 22);
+        ctx.fillStyle = '#aaa'; ctx.fillRect(10, -2, 5, 4); ctx.fillRect(-15, -2, 5, 4);
+      }
+      ctx.shadowBlur = 0; ctx.restore();
+    }
+
+
+    function drawKingpin(x, y, facing) {
+      ctx.save();
+      ctx.translate(x + kingpin.w / 2, y + kingpin.h / 2);
+      ctx.scale(facing, 1);
+      if (kingpin.state === 'ultimate' && kingpin.ultimateTimer > 40) { ctx.shadowColor = '#9b30ff'; ctx.shadowBlur = 25; }
+
+
+      ctx.fillStyle = kingpin.state === 'ultimate' ? '#5a2a8a' : '#3a1a5a';
+      ctx.fillRect(-32, -20, 64, 70);
+      ctx.fillStyle = '#2a1040'; ctx.fillRect(-38, -25, 20, 25); ctx.fillRect(18, -25, 20, 25);
+
+
+      ctx.fillStyle = '#e0c0a0';
+      ctx.beginPath(); ctx.ellipse(0, -42, 22, 24, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#222'; ctx.fillRect(-12, -48, 8, 5); ctx.fillRect(4, -48, 8, 5);
+      ctx.fillStyle = '#8b4513'; ctx.fillRect(-8, -32, 16, 4);
+      ctx.fillStyle = '#ddd'; ctx.fillRect(-14, -18, 28, 12);
+      ctx.fillStyle = '#111';
+      ctx.beginPath(); ctx.moveTo(0, -18); ctx.lineTo(-6, 10); ctx.lineTo(0, 16); ctx.lineTo(6, 10); ctx.closePath(); ctx.fill();
+
+
+      if (kingpin.attackTimer > 0 && kingpin.state !== 'ultimate') {
+        ctx.fillStyle = '#e0c0a0'; ctx.beginPath(); ctx.arc(40, 5, 14, 0, Math.PI * 2); ctx.fill();
+      }
+      if (kingpin.state === 'ultimate' && kingpin.ultimateTimer > 30) {
+        ctx.fillStyle = '#e0c0a0';
+        ctx.beginPath(); ctx.arc(-25, -35, 12, 0, Math.PI * 2); ctx.arc(25, -35, 12, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.shadowBlur = 0; ctx.restore();
+    }
+
+
+    function drawThug(t) {
+      ctx.save();
+      ctx.translate(t.x + t.w / 2, t.y + t.h / 2); ctx.scale(t.facing, 1);
+      ctx.fillStyle = '#2a2a2a'; ctx.fillRect(-10, -8, 20, 28);
+      ctx.fillStyle = '#c4a080'; ctx.beginPath(); ctx.arc(0, -16, 9, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#111'; ctx.fillRect(-5, -18, 3, 3); ctx.fillRect(2, -18, 3, 3);
+      ctx.fillStyle = '#2a2a2a'; ctx.fillRect(-14, -2, 6, 5); ctx.fillRect(8, -2, 6, 5);
+      ctx.fillRect(-7, 20, 5, 12); ctx.fillRect(2, 20, 5, 12);
+      ctx.restore();
+    }
+
+
+    function drawThrownBaton(b) {
+      ctx.save(); ctx.translate(b.x, b.y); ctx.rotate(b.angle);
+      ctx.fillStyle = '#222'; ctx.fillRect(-12, -3, 24, 6);
+      ctx.fillStyle = '#ccc'; ctx.fillRect(-12, -3, 5, 6); ctx.fillRect(7, -3, 5, 6);
+      ctx.restore(); b.angle += 0.45 * Math.sign(b.vx);
+    }
+
+
+    function drawShockwave(s) {
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, s.life / 30);
+      ctx.strokeStyle = '#9b30ff'; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2); ctx.stroke();
+      ctx.strokeStyle = 'rgba(180,100,255,0.5)'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(s.x, s.y, s.radius * 0.7, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    }
+
+
+    function drawBackground() {
+      const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+      grad.addColorStop(0, '#0a0608'); grad.addColorStop(0.55, '#120c10'); grad.addColorStop(1, '#1a1218');
+      ctx.fillStyle = grad; ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+
+      ctx.fillStyle = '#0c080c';
+      for (let i = 0; i < 12; i++) {
+        const bx = (i * 95) % (canvas.width + 100) - 40;
+        const bh = 60 + (i % 4) * 35;
+        ctx.fillRect(bx, canvas.height - bh - 70, 55 + (i % 3) * 15, bh);
+      }
+
+
+      const rainCount = 30 + currentLevel * 15;
+      ctx.strokeStyle = 'rgba(180,180,200,0.15)'; ctx.lineWidth = 1;
+      for (let i = 0; i < rainCount; i++) {
+        const rx = (i * 37 + frame * (3 + currentLevel)) % canvas.width;
+        const ry = (i * 53 + frame * (6 + currentLevel)) % canvas.height;
+        ctx.beginPath(); ctx.moveTo(rx, ry); ctx.lineTo(rx - 2, ry + 12); ctx.stroke();
+      }
+    }
+
+
+    function drawUI() {
+      ctx.fillStyle = '#333'; ctx.fillRect(20, 18, 180, 14);
+      ctx.fillStyle = '#c41e3a'; ctx.fillRect(20, 18, 180 * (player.health / player.maxHealth), 14);
+      ctx.strokeStyle = '#555'; ctx.strokeRect(20, 18, 180, 14);
+      ctx.fillStyle = '#eee'; ctx.font = '12px system-ui'; ctx.fillText('DAREDEVIL', 24, 29);
+
+
+      // Ultimate meter
+      ctx.fillStyle = '#333'; ctx.fillRect(20, 38, 180, 10);
+      const meterColor = player.ultimateReady ? '#ff3355' : '#aa2233';
+      ctx.fillStyle = meterColor;
+      ctx.fillRect(20, 38, 180 * (player.ultimateMeter / player.ultimateMax), 10);
+      ctx.strokeStyle = player.ultimateReady ? '#ff6688' : '#555';
+      ctx.strokeRect(20, 38, 180, 10);
+      ctx.fillStyle = player.ultimateReady ? '#ffccdd' : '#aaa';
+      ctx.font = '11px system-ui';
+      ctx.fillText(player.ultimateReady ? 'ULTIMATE READY (L)' : 'ULTIMATE', 24, 47);
+
+
+      ctx.fillStyle = '#333'; ctx.fillRect(canvas.width - 200, 18, 180, 14);
+      ctx.fillStyle = '#6a2a9a'; ctx.fillRect(canvas.width - 200, 18, 180 * (kingpin.health / kingpin.maxHealth), 14);
+      ctx.strokeStyle = '#555'; ctx.strokeRect(canvas.width - 200, 18, 180, 14);
+      ctx.fillStyle = '#eee'; ctx.textAlign = 'right'; ctx.fillText('KINGPIN', canvas.width - 24, 29); ctx.textAlign = 'left';
+
+
+      ctx.fillStyle = '#c41e3a'; ctx.font = 'bold 16px system-ui'; ctx.textAlign = 'center';
+      ctx.fillText(`LEVEL ${currentLevel} / ${maxLevel}`, canvas.width / 2, 30); ctx.textAlign = 'left';
+
+
+      if (currentLevel === 3 && kingpin.health > 0) {
+        if (kingpin.state === 'ultimate') {
+          ctx.fillStyle = '#ff44ff'; ctx.font = 'bold 18px system-ui'; ctx.textAlign = 'center';
+          ctx.fillText('⚠ KINGPIN ULTIMATE ⚠', canvas.width / 2, 60); ctx.textAlign = 'left';
+        } else if (kingpin.health / kingpin.maxHealth < 0.45 && !kingpin.ultimateUsed) {
+          ctx.fillStyle = 'rgba(180,80,255,0.8)'; ctx.font = '13px system-ui'; ctx.textAlign = 'center';
+          ctx.fillText('Kingpin is charging his power...', canvas.width / 2, 55); ctx.textAlign = 'left';
+        }
+      }
+
+
+      if (player.ultimateActive) {
+        ctx.fillStyle = '#ff3355'; ctx.font = 'bold 16px system-ui'; ctx.textAlign = 'center';
+        ctx.fillText('RADAR SENSE BURST', canvas.width / 2, 70); ctx.textAlign = 'left';
+      }
+    }
+
+
+    function rectCollide(a, b) {
+      return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    }
+
+
+    function updatePlayer() {
+      if ((keys['KeyL'] || keys['KeyU']) && player.ultimateReady && !player.ultimateActive) {
+        player.ultimateActive = true;
+        player.ultimateTimer = 70;
+        player.ultimateReady = false;
+        player.ultimateMeter = 0;
+        player.invincible = 70;
+        for (let i = 0; i < 25; i++) {
+          particles.push({
+            x: player.x + player.w / 2, y: player.y + 20,
+            vx: (Math.random() - 0.5) * 12, vy: (Math.random() - 0.5) * 12,
+            life: 30, color: '#ff3355'
+          });
+        }
+      }
+
+
+      if (player.ultimateActive) {
+        player.ultimateTimer--;
+        if (player.ultimateTimer % 8 === 0) {
+          hitboxes.push({
+            x: player.x + (player.facing === 1 ? player.w - 5 : -40),
+            y: player.y, w: 45, h: 50, life: 7, damage: 14,
+            owner: 'player', isUltimate: true
+          });
+        }
+        if (player.ultimateTimer <= 0) player.ultimateActive = false;
+      }
+
+
+      player.vx = 0;
+      const spd = player.speed * (player.ultimateActive ? 1.3 : 1);
+      if (keys['KeyA'] || keys['ArrowLeft']) { player.vx = -spd; player.facing = -1; }
+      if (keys['KeyD'] || keys['ArrowRight']) { player.vx = spd; player.facing = 1; }
+
+
+      if ((keys['KeyW'] || keys['Space'] || keys['ArrowUp']) && player.onGround) {
+        player.vy = player.jumpPower; player.onGround = false;
+      }
+
+
+      if (!player.ultimateActive) {
+        if ((keys['KeyJ'] || keys['KeyX']) && player.attackCooldown <= 0) {
+          player.attackCooldown = 20; player.attackTimer = 12;
+          hitboxes.push({
+            x: player.x + (player.facing === 1 ? player.w : -28),
+            y: player.y + 10, w: 32, h: 30, life: 11,
+            damage: 11 + currentLevel, owner: 'player'
+          });
+        }
+        if (player.attackCooldown > 0) player.attackCooldown--;
+        if (player.attackTimer > 0) player.attackTimer--;
+
+
+        if (keys['KeyK'] && player.throwCooldown <= 0) {
+          player.throwCooldown = 40;
+          batons.push({
+            x: player.x + player.w / 2, y: player.y + 18,
+            vx: 13 * player.facing, vy: -1.5, angle: 0, life: 70,
+            damage: 16 + currentLevel * 2
+          });
+        }
+        if (player.throwCooldown > 0) player.throwCooldown--;
+      }
+
+
+      player.vy += 0.68; if (player.vy > 15) player.vy = 15;
+      player.x += player.vx; player.y += player.vy;
+
+
+      player.onGround = false;
+      for (const p of platforms) {
+        if (rectCollide(player, p)) {
+          if (player.vy > 0 && player.y + player.h - player.vy <= p.y + 10) {
+            player.y = p.y - player.h; player.vy = 0; player.onGround = true;
+          } else if (player.vy < 0) { player.y = p.y + p.h; player.vy = 0; }
+          else if (player.vx > 0) player.x = p.x - player.w;
+          else if (player.vx < 0) player.x = p.x + p.w;
+        }
+      }
+
+
+      if (player.x < 10) player.x = 10;
+      if (player.x + player.w > canvas.width - 10) player.x = canvas.width - 10 - player.w;
+      if (player.y > canvas.height + 80) {
+        player.health -= 12; player.y = 200; player.vy = 0; player.invincible = 40;
+      }
+      if (player.invincible > 0) player.invincible--;
+    }
+
+
+    function updateKingpin() {
+      if (kingpin.health <= 0) return;
+
+
+      if (currentLevel === 3) {
+        if (!kingpin.ultimateUsed && kingpin.health / kingpin.maxHealth < 0.45) kingpin.ultimateReady = true;
+
+
+        if (kingpin.ultimateReady && !kingpin.ultimateUsed && kingpin.hurtTimer <= 0 && kingpin.state !== 'ultimate') {
+          kingpin.state = 'ultimate'; kingpin.ultimateTimer = 90; kingpin.ultimateUsed = true; kingpin.vx = 0;
+          for (let i = 0; i < 20; i++) {
+            particles.push({
+              x: kingpin.x + kingpin.w / 2, y: kingpin.y + 20,
+              vx: (Math.random() - 0.5) * 10, vy: (Math.random() - 0.5) * 10,
+              life: 40, color: '#9b30ff'
+            });
+          }
+        }
+
+
+        if (kingpin.state === 'ultimate') {
+          kingpin.ultimateTimer--; kingpin.vx = 0;
+          if (kingpin.ultimateTimer > 35) {}
+          else if (kingpin.ultimateTimer > 25) kingpin.vy = -14;
+          else if (kingpin.ultimateTimer === 25) kingpin.vy = 22;
+          else if (kingpin.ultimateTimer === 18) {
+            shockwaves.push({ x: kingpin.x + kingpin.w / 2, y: 430, radius: 20, maxRadius: 320, life: 35, damage: 28 });
+            for (let i = 0; i < 30; i++) {
+              particles.push({
+                x: kingpin.x + kingpin.w / 2 + (Math.random() - 0.5) * 100, y: 420,
+                vx: (Math.random() - 0.5) * 14, vy: -Math.random() * 10, life: 35, color: '#9b30ff'
+              });
+            }
+          }
+          if (kingpin.ultimateTimer <= 0) { kingpin.state = 'idle'; kingpin.ultimateCooldown = 200; }
+
+
+          kingpin.vy += 0.7; if (kingpin.vy > 18) kingpin.vy = 18;
+          kingpin.y += kingpin.vy;
+          for (const p of platforms) {
+            if (rectCollide(kingpin, p) && kingpin.vy > 0) { kingpin.y = p.y - kingpin.h; kingpin.vy = 0; }
+          }
+          return;
+        }
+      }
+
+
+      if (kingpin.hurtTimer > 0) { kingpin.hurtTimer--; return; }
+
+
+      const cfg = getLevelConfig(currentLevel);
+      const dist = player.x - kingpin.x;
+      if (Math.abs(dist) > 85) {
+        kingpin.vx = Math.sign(dist) * kingpin.speed; kingpin.facing = Math.sign(dist);
+      } else {
+        kingpin.vx = 0;
+        if (kingpin.attackCooldown <= 0) {
+          kingpin.attackCooldown = cfg.kingpinAttackRate; kingpin.attackTimer = 22;
+          hitboxes.push({
+            x: kingpin.x + (kingpin.facing === 1 ? kingpin.w - 10 : -30),
+            y: kingpin.y + 25, w: 42, h: 42, life: 16,
+            damage: 14 + currentLevel * 3, owner: 'kingpin'
+          });
+        }
+      }
+
+
+      if (kingpin.attackCooldown > 0) kingpin.attackCooldown--;
+      if (kingpin.attackTimer > 0) kingpin.attackTimer--;
+      if (kingpin.ultimateCooldown > 0) kingpin.ultimateCooldown--;
+
+
+      kingpin.vy += 0.7; if (kingpin.vy > 14) kingpin.vy = 14;
+      kingpin.x += kingpin.vx; kingpin.y += kingpin.vy;
+
+
+      for (const p of platforms) {
+        if (rectCollide(kingpin, p) && kingpin.vy > 0) { kingpin.y = p.y - kingpin.h; kingpin.vy = 0; }
+      }
+      if (kingpin.x < 20) kingpin.x = 20;
+      if (kingpin.x + kingpin.w > canvas.width - 20) kingpin.x = canvas.width - 20 - kingpin.w;
+    }
+
+
+    function updateThugs() {
+      for (let i = thugs.length - 1; i >= 0; i--) {
+        const t = thugs[i];
+        if (t.health <= 0) { thugs.splice(i, 1); continue; }
+        if (t.hurtTimer > 0) { t.hurtTimer--; continue; }
+
+
+        const dist = player.x - t.x;
+        if (Math.abs(dist) > 50) { t.vx = Math.sign(dist) * t.speed; t.facing = Math.sign(dist); }
+        else {
+          t.vx = 0;
+          if (t.attackCooldown <= 0) {
+            t.attackCooldown = 50;
+            hitboxes.push({ x: t.x + (t.facing === 1 ? t.w : -20), y: t.y + 8, w: 24, h: 24, life: 12, damage: 8 + currentLevel, owner: 'thug' });
+          }
+        }
+        if (t.attackCooldown > 0) t.attackCooldown--;
+
+
+        t.vy = (t.vy || 0) + 0.65; t.x += t.vx; t.y += t.vy;
+        for (const p of platforms) {
+          if (rectCollide(t, p) && t.vy > 0) { t.y = p.y - t.h; t.vy = 0; }
+        }
+      }
+    }
+
+
+    function updateBatons() {
+      for (let i = batons.length - 1; i >= 0; i--) {
+        const b = batons[i];
+        b.x += b.vx; b.y += b.vy; b.vy += 0.25; b.life--;
+
+
+        if (kingpin.health > 0 && rectCollide({ x: b.x - 10, y: b.y - 4, w: 20, h: 8 }, kingpin)) {
+          const dmg = (kingpin.state === 'ultimate') ? Math.floor(b.damage * 0.4) : b.damage;
+          kingpin.health -= dmg; kingpin.hurtTimer = 10; kingpin.vx = Math.sign(b.vx) * 3;
+          addUltimateMeter(b.damage);
+          spawnHitParticles(b.x, b.y, '#c41e3a');
+          batons.splice(i, 1); continue;
+        }
+
+
+        let hit = false;
+        for (const t of thugs) {
+          if (t.health > 0 && rectCollide({ x: b.x - 10, y: b.y - 4, w: 20, h: 8 }, t)) {
+            t.health -= b.damage; t.hurtTimer = 10;
+            addUltimateMeter(b.damage);
+            spawnHitParticles(b.x, b.y, '#c41e3a');
+            hit = true; break;
+          }
+        }
+        if (hit) { batons.splice(i, 1); continue; }
+        if (b.life <= 0 || b.x < -30 || b.x > canvas.width + 30) batons.splice(i, 1);
+      }
+    }
+
+
+    function spawnHitParticles(x, y, color) {
+      for (let k = 0; k < 6; k++) {
+        particles.push({ x, y, vx: (Math.random() - 0.5) * 7, vy: (Math.random() - 0.5) * 7, life: 22, color });
+      }
+    }
+
+
+    function updateHitboxes() {
+      for (let i = hitboxes.length - 1; i >= 0; i--) {
+        const h = hitboxes[i]; h.life--;
+
+
+        if (h.owner === 'player') {
+          if (kingpin.health > 0 && rectCollide(h, kingpin) && kingpin.hurtTimer <= 0) {
+            const dmg = (kingpin.state === 'ultimate') ? Math.floor(h.damage * 0.35) : h.damage;
+            kingpin.health -= dmg;
+            kingpin.hurtTimer = h.isUltimate ? 6 : 10;
+            kingpin.vx = player.facing * (h.isUltimate ? 5 : 3);
+            addUltimateMeter(dmg);
+            spawnHitParticles(h.x + 10, h.y + 10, '#c41e3a');
+          }
+          for (const t of thugs) {
+            if (t.health > 0 && rectCollide(h, t) && t.hurtTimer <= 0) {
+              t.health -= h.damage; t.hurtTimer = 10;
+              addUltimateMeter(h.damage);
+              spawnHitParticles(h.x + 10, h.y + 10, '#c41e3a');
+            }
+          }
+        }
+
+
+        if ((h.owner === 'kingpin' || h.owner === 'thug') && rectCollide(h, player) && player.invincible <= 0) {
+          player.health -= h.damage; player.invincible = 40;
+          player.vx = (h.owner === 'kingpin' ? kingpin.facing : 1) * 6; player.vy = -5;
+          spawnHitParticles(player.x + 15, player.y + 20, '#6a2a9a');
+        }
+        if (h.life <= 0) hitboxes.splice(i, 1);
+      }
+    }
+
+
+    function updateShockwaves() {
+      for (let i = shockwaves.length - 1; i >= 0; i--) {
+        const s = shockwaves[i]; s.radius += 9; s.life--;
+        const dx = (player.x + player.w / 2) - s.x;
+        const dy = (player.y + player.h / 2) - s.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < s.radius + 20 && dist > s.radius - 40 && player.invincible <= 0 && s.life > 10) {
+          player.health -= s.damage; player.invincible = 50;
+          player.vx = dx > 0 ? 9 : -9; player.vy = -8;
+          spawnHitParticles(player.x + 15, player.y + 20, '#9b30ff');
+        }
+        if (s.life <= 0 || s.radius > s.maxRadius) shockwaves.splice(i, 1);
+      }
+    }
+
+
+    function updateParticles() {
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i]; p.x += p.vx; p.y += p.vy; p.vy += 0.2; p.life--;
+        if (p.life <= 0) particles.splice(i, 1);
+      }
+    }
+
+
+    function update() {
+      if (gameState === 'levelclear') { levelClearTimer++; return; }
+      if (gameState !== 'playing') return;
+      frame++;
+
+
+      updatePlayer(); updateKingpin(); updateThugs();
+      updateBatons(); updateHitboxes(); updateShockwaves(); updateParticles();
+
+
+      if (player.health <= 0) { player.health = 0; gameState = 'lose'; }
+      if (kingpin.health <= 0 && thugs.every(t => t.health <= 0)) {
+        if (currentLevel >= maxLevel) gameState = 'win';
+        else { gameState = 'levelclear'; levelClearTimer = 0; }
+      }
+    }
+
+
+    function draw() {
+      drawBackground();
+
+
+      ctx.fillStyle = '#1e1a1c';
+      for (const p of platforms) {
+        ctx.fillRect(p.x, p.y, p.w, p.h);
+        ctx.fillStyle = '#2a2428'; ctx.fillRect(p.x, p.y, p.w, 4); ctx.fillStyle = '#1e1a1c';
+      }
+
+
+      for (const s of shockwaves) drawShockwave(s);
+      for (const p of particles) {
+        ctx.globalAlpha = Math.min(1, p.life / 15);
+        ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, 4, 4); ctx.globalAlpha = 1;
+      }
+      for (const b of batons) drawThrownBaton(b);
+      for (const t of thugs) if (t.health > 0) drawThug(t);
+
+
+      if (player.invincible <= 0 || Math.floor(player.invincible / 4) % 2 === 0)
+        drawDaredevil(player.x, player.y, player.facing);
+
+
+      if (kingpin.health > 0) drawKingpin(kingpin.x, kingpin.y, kingpin.facing);
+      else {
+        ctx.save();
+        ctx.translate(kingpin.x + kingpin.w / 2, kingpin.y + kingpin.h - 10);
+        ctx.rotate(Math.PI / 2);
+        drawKingpin(-kingpin.w / 2, -kingpin.h / 2, 1);
+        ctx.restore();
+      }
+
+
+      if (player.attackTimer > 0) {
+        ctx.strokeStyle = 'rgba(196,30,58,0.55)'; ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(player.x + player.w / 2 + player.facing * 20, player.y + 20, 26, -1.1, 1.1);
+        ctx.stroke();
+      }
+
+
+      drawUI();
+
+
+      if (gameState === 'start') {
+        ctx.fillStyle = 'rgba(0,0,0,0.78)'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#c41e3a'; ctx.font = 'bold 44px system-ui'; ctx.textAlign = 'center';
+        ctx.fillText('DAREDEVIL', canvas.width / 2, 150);
+        ctx.fillStyle = '#ccc'; ctx.font = '22px system-ui'; ctx.fillText('vs KINGPIN', canvas.width / 2, 195);
+        ctx.fillStyle = '#aaa'; ctx.font = '16px system-ui';
+        ctx.fillText('3 Levels • Both have Ultimates', canvas.width / 2, 250);
+        ctx.fillStyle = '#888'; ctx.font = '17px system-ui';
+        ctx.fillText('Press SPACE or ENTER to start', canvas.width / 2, 320); ctx.textAlign = 'left';
+      }
+
+
+      if (gameState === 'levelclear') {
+        ctx.fillStyle = 'rgba(0,0,0,0.75)'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#c41e3a'; ctx.font = 'bold 36px system-ui'; ctx.textAlign = 'center';
+        ctx.fillText(`LEVEL ${currentLevel} CLEARED`, canvas.width / 2, 180);
+        ctx.fillStyle = '#eee'; ctx.font = '20px system-ui';
+        ctx.fillText(currentLevel < maxLevel ? 'Get ready for the next fight...' : 'Final challenge awaits', canvas.width / 2, 240);
+        ctx.fillStyle = '#888'; ctx.font = '17px system-ui';
+        ctx.fillText('Press SPACE to continue', canvas.width / 2, 310); ctx.textAlign = 'left';
+      }
+
+
+      if (gameState === 'win') {
+        ctx.fillStyle = 'rgba(0,0,0,0.82)'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#c41e3a'; ctx.font = 'bold 40px system-ui'; ctx.textAlign = 'center';
+        ctx.fillText('KINGPIN DEFEATED', canvas.width / 2, 170);
+        ctx.fillStyle = '#eee'; ctx.font = '22px system-ui'; ctx.fillText('All 3 Levels Cleared!', canvas.width / 2, 230);
+        ctx.fillStyle = '#ccc'; ctx.font = '18px system-ui';
+        ctx.fillText('Hell\'s Kitchen is safe... for now', canvas.width / 2, 280);
+        ctx.fillStyle = '#888'; ctx.font = '16px system-ui';
+        ctx.fillText('Press SPACE / R to play again', canvas.width / 2, 340); ctx.textAlign = 'left';
+      }
+
+
+      if (gameState === 'lose') {
+        ctx.fillStyle = 'rgba(0,0,0,0.8)'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#6a2a9a'; ctx.font = 'bold 40px system-ui'; ctx.textAlign = 'center';
+        ctx.fillText('YOU WERE DEFEATED', canvas.width / 2, 180);
+        ctx.fillStyle = '#ccc'; ctx.font = '18px system-ui';
+        ctx.fillText(`Fell on Level ${currentLevel}`, canvas.width / 2, 250);
+        ctx.fillStyle = '#888'; ctx.font = '16px system-ui';
+        ctx.fillText('Press SPACE / R to try again', canvas.width / 2, 320); ctx.textAlign = 'left';
+      }
+    }
+
+
+    function loop() { update(); draw(); requestAnimationFrame(loop); }
+    loop();
+  </script>
+</body>
+</html>
